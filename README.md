@@ -19,6 +19,7 @@ Firmware for the **Elecrow CrowPanel 5.79" ESP32-S3 E-Paper Display**. Shows alt
 - **Last updated:** Pacific time (PST/PDT), NTP-synced
 - **Auto-refresh:** Every 15 minutes
 - **Auto-reboot:** Reboots if WiFi is disconnected at a refresh interval, or after 5 consecutive quote-fetch failures
+- **GitHub updates:** Every 15 minutes, installs the latest firmware release when it was built from a newer commit
 
 ## Setup
 
@@ -31,7 +32,7 @@ Edit `include/config.h` and set your network:
 #define WIFI_PASS "your-password"
 ```
 
-Consider adding `include/config.h` to `.gitignore` if it contains secrets.
+`include/config.h` is gitignored. The GitHub build does not contain these credentials.
 
 ### 2. Build & upload
 
@@ -86,6 +87,16 @@ Trash week alternates every other Thursday, calculated from the Unix epoch week 
 ## Timezone
 
 Configured for Pacific Time (PST/PDT) with automatic daylight saving. Change the timezone string in `setup()` if needed (e.g. `EST5EDT,M3.2.0,M11.1.0` for Eastern).
+
+## Updates
+
+Every 15 minutes the device asks GitHub for the [latest firmware release](https://github.com/tylerjwoodfin/crowpanel-dashboard/releases/latest). The release tag is the commit SHA that built `firmware.bin`. The device installs that file only when the tag is a newer commit than the one baked into the running firmware. The same commit, or an older release, is left alone.
+
+The panel cannot compile source. [`.github/workflows/firmware.yml`](.github/workflows/firmware.yml) builds the binary on GitHub Actions when a push to `main` changes `src/`, `include/`, `platformio.ini`, `git_version.py`, or the workflow itself. The short commit on the bottom of the screen is the running build.
+
+Flash once over USB so the updater is on the device. That build copies `include/config.h` into the ESP32's NVS partition. Later GitHub builds leave the WiFi fields empty, so the public `firmware.bin` does not contain the password, and the device keeps using the credentials already stored. Changing WiFi means flashing over USB again.
+
+Until the first release exists, the update check finds nothing and the current firmware keeps running.
 
 ## Dependencies
 

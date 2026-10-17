@@ -2,7 +2,8 @@
  * CrowPanel 5.79" - trash duty + quote display
  *
  * Displays trash duty and a random quote from ZenQuotes.
- * Refreshes every 15 minutes.
+ * Refreshes every 15 minutes, and installs a GitHub firmware release
+ * when that release was built from a different commit.
  */
 
 #include <Arduino.h>
@@ -21,7 +22,10 @@ void loop() {
 #else
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <HTTPUpdate.h>
+#include <Preferences.h>
 #include <ArduinoJson.h>
 #include <time.h>
 #include <GxEPD2_BW.h>
@@ -32,6 +36,13 @@ void loop() {
 
 #include "config.h"
 
+#ifndef FW_GIT_SHA
+#define FW_GIT_SHA "unknown"
+#endif
+#ifndef FW_GIT_UNIX
+#define FW_GIT_UNIX 0
+#endif
+
 #define EPD_BUSY 48
 #define EPD_RST  47
 #define EPD_DC   46
@@ -41,6 +52,8 @@ void loop() {
 #define EPD_PWR  7
 
 #define QUOTE_API_URL "https://zenquotes.io/api/random"
+#define GITHUB_LATEST_RELEASE \
+    "https://api.github.com/repos/tylerjwoodfin/crowpanel-dashboard/releases/latest"
 #define REFRESH_MS    (15 * 60 * 1000)
 #define MAX_FETCH_FAILURES 5
 
@@ -155,15 +168,18 @@ void updateDisplay() {
     char header[32];
     snprintf(header, sizeof(header), "%s's Trash Week", trashOwner);
 
-    char updated[64];
+    char updated[80];
     time_t now = time(nullptr);
     // 946684800 = Jan 1, 2000 UTC - reject epoch (1969-12-31) or unsynced time
     struct tm* t = (now > 946684800) ? localtime(&now) : nullptr;
     if (t) {
-        snprintf(updated, sizeof(updated), "Updated %04d-%02d-%02d %02d:%02d",
-                 t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min);
+        int hour12 = t->tm_hour % 12;
+        if (hour12 == 0) hour12 = 12;
+        snprintf(updated, sizeof(updated), "Updated %04d-%02d-%02d %d:%02d %s  %.7s",
+                 t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, hour12, t->tm_min,
+                 t->tm_hour >= 12 ? "PM" : "AM", FW_GIT_SHA);
     } else {
-        snprintf(updated, sizeof(updated), "Updated (no NTP)");
+        snprintf(updated, sizeof(updated), "Updated (no NTP)  %.7s", FW_GIT_SHA);
     }
 
     display.fillScreen(GxEPD_WHITE);
@@ -190,10 +206,142 @@ void updateDisplay() {
     Serial.println("Done.");
 }
 
+bool isGitSha(const String& s) {
+    if (s.length() != 40) return false;
+    for (unsigned i = 0; i < s.length(); i++) {
+        char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
+// Days from civil UTC (Howard Hinnant). Month is 1-12.
+long daysFromCivil(int year, int month, int day) {
+    year -= month <= 2;
+    const int era = (year >= 0 ? year : year - 399) / 400;
+    const unsigned yoe = (unsigned)(year - era * 400);
+    const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return (long)era * 146097 + (long)doe - 719468;
+}
+
+// "2026-10-16T04:48:00Z" -> unix time. Returns false if the string is not that form.
+bool parseGithubTime(const String& s, time_t* out) {
+    int year, month, day, hour, min, sec;
+    if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%dZ",
+               &year, &month, &day, &hour, &min, &sec) != 6) {
+        return false;
+    }
+    if (month < 1 || month > 12 || day < 1 || day > 31 ||
+        hour < 0 || hour > 23 || min < 0 || min > 59 || sec < 0 || sec > 60) {
+        return false;
+    }
+    *out = (time_t)daysFromCivil(year, month, day) * 86400 +
+           hour * 3600 + min * 60 + sec;
+    return true;
+}
+
+// Latest release tag is the commit SHA that GitHub Actions built.
+bool fetchLatestRelease(String& sha, time_t* published) {
+    HTTPClient http;
+    if (!http.begin(GITHUB_LATEST_RELEASE)) return false;
+    http.setTimeout(15000);
+    http.setUserAgent("crowpanel-dashboard");
+    http.addHeader("Accept", "application/vnd.github+json");
+
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+        Serial.printf("Release check HTTP %d\n", code);
+        http.end();
+        return false;
+    }
+
+    String payload = http.getString();
+    http.end();
+
+    JsonDocument filter;
+    filter["tag_name"] = true;
+    filter["published_at"] = true;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(
+        doc, payload, DeserializationOption::Filter(filter));
+    if (err) {
+        Serial.printf("Release JSON: %s\n", err.c_str());
+        return false;
+    }
+
+    sha = doc["tag_name"].as<String>();
+    sha.trim();
+    sha.toLowerCase();
+    if (!isGitSha(sha)) {
+        Serial.printf("Latest release tag is not a commit: %s\n", sha.c_str());
+        return false;
+    }
+    String publishedAt = doc["published_at"].as<String>();
+    if (!parseGithubTime(publishedAt, published)) {
+        Serial.printf("Bad release time: %s\n", publishedAt.c_str());
+        return false;
+    }
+    return true;
+}
+
+void showStatus(const char* line) {
+    display.init(0, false);
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+    display.setFont(&FreeSansBold24pt7b);
+    display.setCursor(20, 150);
+    display.print(line);
+    display.display(false);
+    display.hibernate();
+}
+
+void installFirmware(const String& sha) {
+    String url = "https://github.com/tylerjwoodfin/crowpanel-dashboard/releases/download/";
+    url += sha;
+    url += "/firmware.bin";
+    Serial.printf("Installing %s\n", url.c_str());
+    showStatus("Installing update");
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(60);
+
+    HTTPUpdate updater(120000);
+    updater.rebootOnUpdate(true);
+    updater.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+    HTTPUpdateResult result = updater.update(client, url, FW_GIT_SHA, [](HTTPClient* http) {
+        http->addHeader("Accept", "application/octet-stream");
+    });
+    Serial.printf("Update failed (%d): %s\n", (int)result, updater.getLastErrorString().c_str());
+}
+
+void maybeInstallFirmware() {
+    String remote;
+    time_t published = 0;
+    if (!fetchLatestRelease(remote, &published)) return;
+
+    String local = FW_GIT_SHA;
+    local.toLowerCase();
+    if (local == remote) {
+        Serial.println("Firmware matches GitHub");
+        return;
+    }
+    // Skip a release built from an older commit so a USB flash of newer local
+    // code is not replaced by the previous GitHub build.
+    if (FW_GIT_UNIX != 0 && published <= (time_t)FW_GIT_UNIX) {
+        Serial.printf("GitHub %s is older than this build; skipping\n", remote.c_str());
+        return;
+    }
+
+    Serial.printf("Firmware %s differs from GitHub %s\n", local.c_str(), remote.c_str());
+    installFirmware(remote);
+}
+
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("CrowPanel Hello");
+    Serial.printf("CrowPanel Hello %s\n", FW_GIT_SHA);
 
     pinMode(EPD_PWR, OUTPUT);
     digitalWrite(EPD_PWR, HIGH);
@@ -206,15 +354,31 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
 
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    Serial.print("WiFi connecting");
-    int tries = 0;
-    while (WiFi.status() != WL_CONNECTED && tries < 30) {
-        delay(500);
-        Serial.print(".");
-        tries++;
+    // USB builds copy config.h into NVS. GitHub builds leave these empty so the
+    // public firmware.bin does not contain the WiFi password.
+    Preferences prefs;
+    prefs.begin("wifi", false);
+    if (WIFI_SSID[0] != '\0') {
+        prefs.putString("ssid", WIFI_SSID);
+        prefs.putString("pass", WIFI_PASS);
     }
-    Serial.println();
+    String wifiSsid = prefs.getString("ssid", "");
+    String wifiPass = prefs.getString("pass", "");
+    prefs.end();
+
+    if (wifiSsid.length() == 0) {
+        Serial.println("No WiFi credentials stored");
+    } else {
+        WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+        Serial.print("WiFi connecting");
+        int tries = 0;
+        while (WiFi.status() != WL_CONNECTED && tries < 30) {
+            delay(500);
+            Serial.print(".");
+            tries++;
+        }
+        Serial.println();
+    }
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("WiFi connected: IP %s, RSSI %d dBm\n",
                       WiFi.localIP().toString().c_str(), WiFi.RSSI());
@@ -251,6 +415,7 @@ void loop() {
         rebootDevice("WiFi disconnected at refresh interval");
     }
 
+    maybeInstallFirmware();
     updateDisplay();
 
     // Reboot after too many consecutive quote-fetch failures.

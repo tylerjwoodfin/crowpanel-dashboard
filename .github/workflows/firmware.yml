@@ -1,0 +1,50 @@
+name: Firmware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "platformio.ini"
+      - "git_version.py"
+      - ".github/workflows/firmware.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      # Credentials live in NVS on the device. The public binary stays empty.
+      - name: Write empty WiFi config
+        run: |
+          cat > include/config.h << 'EOF'
+          #ifndef CONFIG_H
+          #define CONFIG_H
+          #define WIFI_SSID ""
+          #define WIFI_PASS ""
+          #endif
+          EOF
+
+      - name: Build
+        run: pio run -e crowpanel
+
+      - name: Publish firmware
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.sha }}
+          name: ${{ github.sha }}
+          files: .pio/build/crowpanel/firmware.bin
+          fail_on_unmatched_files: true
+          make_latest: true
