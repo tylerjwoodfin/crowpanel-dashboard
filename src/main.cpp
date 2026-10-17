@@ -1,9 +1,10 @@
 /**
- * CrowPanel 5.79" - trash duty + quote display
+ * CrowPanel 5.79" - trash duty, quote, and grocery list
  *
- * Displays trash duty and a random quote from ZenQuotes.
- * Refreshes every 15 minutes, and installs a GitHub firmware release
- * when that release was built from a different commit.
+ * Displays trash duty, a random quote from ZenQuotes, and the incomplete
+ * items from the Reminders Grocery list. Refreshes every 15 minutes, and
+ * installs a GitHub firmware release when that release was built from a
+ * different commit.
  */
 
 #include <Arduino.h>
@@ -32,6 +33,7 @@ void loop() {
 #include <gdey/GxEPD2_579_GDEY0579T93.h>
 #include <Adafruit_GFX.h>
 #include <Fonts/FreeSans12pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSansBold24pt7b.h>
 
 #include "config.h"
@@ -52,10 +54,21 @@ void loop() {
 #define EPD_PWR  7
 
 #define QUOTE_API_URL "https://zenquotes.io/api/random"
+#ifndef GROCERY_API_URL
+#define GROCERY_API_URL "http://192.168.1.102:8765/grocery"
+#endif
 #define GITHUB_LATEST_RELEASE \
     "https://api.github.com/repos/tylerjwoodfin/crowpanel-dashboard/releases/latest"
 #define REFRESH_MS    (15 * 60 * 1000)
 #define MAX_FETCH_FAILURES 5
+#define GROCERY_CAP 40
+
+// Quote text stays in the left 80% (634 of 792). Grocery uses the strip to the right.
+#define QUOTE_X 20
+#define QUOTE_W 634
+#define DIVIDER_X 660
+#define GROCERY_X 672
+#define GROCERY_W 108
 
 // Tracks consecutive quote-fetch failures so we can reboot after MAX_FETCH_FAILURES.
 static int consecutiveFetchFailures = 0;
@@ -113,6 +126,43 @@ bool fetchQuote(String& quote, String& author) {
     return true;
 }
 
+// Incomplete Grocery titles. False when the list could not be fetched.
+bool fetchGroceries(String* items, int* count) {
+    *count = 0;
+    HTTPClient http;
+    if (!http.begin(GROCERY_API_URL)) return false;
+    http.setTimeout(8000);
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+        Serial.printf("Grocery HTTP %d\n", code);
+        http.end();
+        return false;
+    }
+
+    String payload = http.getString();
+    http.end();
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, payload);
+    if (err) {
+        Serial.printf("Grocery JSON: %s\n", err.c_str());
+        return false;
+    }
+
+    JsonArray arr = doc["items"].as<JsonArray>();
+    if (arr.isNull()) return false;
+
+    for (JsonVariant v : arr) {
+        if (*count >= GROCERY_CAP) break;
+        const char* title = v.as<const char*>();
+        if (!title || !title[0]) continue;
+        items[*count] = title;
+        (*count)++;
+    }
+    Serial.printf("Grocery items: %d\n", *count);
+    return true;
+}
+
 int16_t wrapAndDraw(const String& s, int16_t x, int16_t y, int16_t maxW) {
     int16_t curY = y;
     const int lineHeight = 36;  // Double spacing
@@ -145,10 +195,64 @@ int16_t wrapAndDraw(const String& s, int16_t x, int16_t y, int16_t maxW) {
     return curY;
 }
 
-void updateDisplay() {
-    display.init(0, false);  // Wake from hibernate
+String fitWidth(const String& text, int16_t maxW) {
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(text.c_str(), 0, 0, &x1, &y1, &w, &h);
+    if (w <= (uint16_t)maxW) return text;
 
+    for (int n = (int)text.length() - 1; n > 0; n--) {
+        String trial = text.substring(0, n) + "...";
+        display.getTextBounds(trial.c_str(), 0, 0, &x1, &y1, &w, &h);
+        if (w <= (uint16_t)maxW) return trial;
+    }
+    return "...";
+}
+
+void drawGroceryColumn(String* items, int count, bool ok) {
+    const int16_t lineH = 26;
+    const int16_t bottom = 258;
+
+    display.drawFastVLine(DIVIDER_X, 16, 244, GxEPD_BLACK);
+    display.setFont(&FreeSansBold12pt7b);
+    display.setCursor(GROCERY_X, 40);
+    display.print(fitWidth("Grocery", GROCERY_W));
+
+    display.setFont(&FreeSans12pt7b);
+    int16_t y = 40 + lineH + 6;
+    if (!ok) {
+        display.setCursor(GROCERY_X, y);
+        display.print(fitWidth("offline", GROCERY_W));
+        return;
+    }
+
+    int maxLines = 0;
+    for (int16_t yy = y; yy <= bottom; yy += lineH) maxLines++;
+    if (maxLines < 1) return;
+
+    int shown = count;
+    bool overflow = false;
+    if (count > maxLines) {
+        shown = maxLines - 1;
+        overflow = true;
+    }
+    for (int i = 0; i < shown; i++) {
+        display.setCursor(GROCERY_X, y);
+        display.print(fitWidth(items[i], GROCERY_W));
+        y += lineH;
+    }
+    if (overflow) {
+        String more = "+" + String(count - shown);
+        display.setCursor(GROCERY_X, y);
+        display.print(fitWidth(more, GROCERY_W));
+    }
+}
+
+void updateDisplay() {
     String quote, author;
+    static String groceries[GROCERY_CAP];
+    int groceryCount = 0;
+    bool groceryOk = false;
     if (WiFi.status() == WL_CONNECTED) {
         if (fetchQuote(quote, author)) {
             Serial.println("Quote: " + quote);
@@ -159,10 +263,13 @@ void updateDisplay() {
             quote = "Error fetching quote.";
             author = "";
         }
+        groceryOk = fetchGroceries(groceries, &groceryCount);
     } else {
         quote = "No WiFi";
         author = "";
     }
+
+    display.init(0, false);  // Wake from hibernate
 
     const char* trashOwner = getTrashWeekOwner();
     char header[32];
@@ -190,7 +297,8 @@ void updateDisplay() {
 
     display.setFont(&FreeSans12pt7b);
     String quotedText = "\"" + quote + "\"";
-    int16_t quoteEndY = wrapAndDraw(quotedText, 20, 95, 634);
+    int16_t quoteEndY = wrapAndDraw(quotedText, QUOTE_X, 95, QUOTE_W);
+    drawGroceryColumn(groceries, groceryCount, groceryOk);
 
     if (author.length() > 0) {
         display.setCursor(60, quoteEndY + 2);

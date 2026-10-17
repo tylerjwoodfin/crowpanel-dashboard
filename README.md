@@ -1,6 +1,6 @@
 # CrowPanel Hello
 
-Firmware for the **Elecrow CrowPanel 5.79" ESP32-S3 E-Paper Display**. Shows alternating trash duty and a random quote from ZenQuotes, refreshing every 15 minutes.
+Firmware for the **Elecrow CrowPanel 5.79" ESP32-S3 E-Paper Display**. Shows alternating trash duty, a random quote from ZenQuotes, and the incomplete Reminders Grocery list, refreshing every 15 minutes.
 
 [Amazon Link](https://www.amazon.com/dp/B0FX4PDW6M)
 
@@ -15,11 +15,29 @@ Firmware for the **Elecrow CrowPanel 5.79" ESP32-S3 E-Paper Display**. Shows alt
 ## Features
 
 - **Trash duty:** Alternates between two names every other Thursday (epoch-week based)
-- **Random quote:** Fetched from [ZenQuotes API](https://zenquotes.io/) at each refresh
+- **Random quote:** Fetched from [ZenQuotes API](https://zenquotes.io/) at each refresh, wrapped in the left 80% of the screen
+- **Grocery list:** Incomplete items from the Reminders list named Grocery, drawn in the right column
 - **Last updated:** Pacific time (PST/PDT), NTP-synced
 - **Auto-refresh:** Every 15 minutes
 - **Auto-reboot:** Reboots if WiFi is disconnected at a refresh interval, or after 5 consecutive quote-fetch failures
 - **GitHub updates:** Every 15 minutes, installs the latest firmware release when it was built from a newer commit
+
+## Grocery list
+
+ice (`192.168.1.102`) serves the incomplete items from the Reminders list named Grocery at `http://192.168.1.102:8765/grocery`. The panel fetches that URL on each refresh and draws the titles to the right of the quote. A missing server shows "offline" in that column and does not count toward the quote-fetch reboot.
+
+The server runs `server/GroceryList.app`, a small EventKit helper. It only reads incomplete titles. It does not complete, edit, or delete reminders. macOS blocks that read until CrowPanel Grocery is allowed under System Settings → Privacy & Security → Reminders. If it is not listed, add `server/GroceryList.app` with the + button.
+
+```bash
+~/git/crowpanel-dashboard/server/build_helper.sh
+```
+
+```bash
+ln -sf ~/git/crowpanel-dashboard/launchd/com.tyler.crowpanel-grocery.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tyler.crowpanel-grocery.plist
+```
+
+`server/grocery.py --check` prints how many incomplete items it found.
 
 ## Setup
 
