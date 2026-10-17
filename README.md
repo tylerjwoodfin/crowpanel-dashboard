@@ -18,6 +18,7 @@ Firmware for the **Elecrow CrowPanel 5.79" ESP32-S3 E-Paper Display**. Shows alt
 - **Random quote:** Fetched from [ZenQuotes API](https://zenquotes.io/) at each refresh
 - **Last updated:** Pacific time (PST/PDT), NTP-synced
 - **Auto-refresh:** Every 15 minutes
+- **Auto-reboot:** Reboots if WiFi is disconnected at a refresh interval, or after 5 consecutive quote-fetch failures
 
 ## Setup
 

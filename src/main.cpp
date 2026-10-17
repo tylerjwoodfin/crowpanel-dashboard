@@ -42,6 +42,17 @@ void loop() {
 
 #define QUOTE_API_URL "https://zenquotes.io/api/random"
 #define REFRESH_MS    (15 * 60 * 1000)
+#define MAX_FETCH_FAILURES 5
+
+// Tracks consecutive quote-fetch failures so we can reboot after MAX_FETCH_FAILURES.
+static int consecutiveFetchFailures = 0;
+
+void rebootDevice(const char* reason) {
+    Serial.printf("Rebooting: %s\n", reason);
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+}
 
 GxEPD2_BW<GxEPD2_579_GDEY0579T93, GxEPD2_579_GDEY0579T93::HEIGHT> display(
     GxEPD2_579_GDEY0579T93(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY)
@@ -49,7 +60,8 @@ GxEPD2_BW<GxEPD2_579_GDEY0579T93, GxEPD2_579_GDEY0579T93::HEIGHT> display(
 
 const char* getTrashWeekOwner() {
     time_t now = time(nullptr);
-    if (now < 0) return "Huy";
+    // Require a real (NTP-synced) clock; otherwise the week can't be trusted.
+    if (now < 946684800) return "Huy";
 
     struct tm* t = localtime(&now);
     int wday = t->tm_wday;
@@ -127,7 +139,10 @@ void updateDisplay() {
     if (WiFi.status() == WL_CONNECTED) {
         if (fetchQuote(quote, author)) {
             Serial.println("Quote: " + quote);
+            consecutiveFetchFailures = 0;
         } else {
+            consecutiveFetchFailures++;
+            Serial.printf("Quote fetch failed (%d in a row)\n", consecutiveFetchFailures);
             quote = "Error fetching quote.";
             author = "";
         }
@@ -189,6 +204,8 @@ void setup() {
     display.setRotation(2);  // 180° - upside down
 
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     Serial.print("WiFi connecting");
     int tries = 0;
@@ -198,16 +215,29 @@ void setup() {
         tries++;
     }
     Serial.println();
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("WiFi connected: IP %s, RSSI %d dBm\n",
+                      WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    } else {
+        Serial.printf("WiFi FAILED, status=%d\n", WiFi.status());
+    }
 
     if (WiFi.status() == WL_CONNECTED) {
         // Pacific: setenv+tzset for localtime(), configTzTime for NTP sync
         setenv("TZ", "PST8PDT,M3.2.0,M11.1.0", 1);
         tzset();
-        configTzTime("PST8PDT,M3.2.0,M11.1.0", "pool.ntp.org");
-        for (int i = 0; i < 40; i++) {  // Wait up to 20 sec for valid NTP (reject 1969-12-31)
+        configTzTime("PST8PDT,M3.2.0,M11.1.0",
+                     "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+        Serial.print("NTP syncing");
+        for (int i = 0; i < 120; i++) {  // Wait up to 60 sec for valid NTP (reject 1969-12-31)
             if (time(nullptr) > 946684800) break;  // Jan 1, 2000
             delay(500);
+            Serial.print(".");
         }
+        Serial.println();
+        time_t now = time(nullptr);
+        Serial.printf("NTP time=%lld synced=%s\n",
+                      (long long)now, (now > 946684800) ? "YES" : "NO");
     }
 
     updateDisplay();
@@ -215,7 +245,18 @@ void setup() {
 
 void loop() {
     delay(REFRESH_MS);
+
+    // Reboot if WiFi has dropped by the time we want to refresh.
+    if (WiFi.status() != WL_CONNECTED) {
+        rebootDevice("WiFi disconnected at refresh interval");
+    }
+
     updateDisplay();
+
+    // Reboot after too many consecutive quote-fetch failures.
+    if (consecutiveFetchFailures >= MAX_FETCH_FAILURES) {
+        rebootDevice("Quote fetch failed too many times in a row");
+    }
 }
 
 #endif
