@@ -63,12 +63,17 @@ void loop() {
 #define MAX_FETCH_FAILURES 5
 #define GROCERY_CAP 40
 
-// Quote text stays in the left 80% (634 of 792). Grocery uses the strip to the right.
+// 792px wide. Grocery is the right 30%; the quote wraps in the space to its left.
+#define SCREEN_W 792
 #define QUOTE_X 20
-#define QUOTE_W 634
-#define DIVIDER_X 660
-#define GROCERY_X 672
-#define GROCERY_W 108
+#define EDGE_PAD 12
+#define DIVIDER_GAP 8
+#define GROCERY_REGION ((SCREEN_W * 30 + 99) / 100)
+#define DIVIDER_X (SCREEN_W - GROCERY_REGION)
+#define GROCERY_X (DIVIDER_X + EDGE_PAD)
+#define GROCERY_W (SCREEN_W - EDGE_PAD - GROCERY_X)
+#define QUOTE_W (DIVIDER_X - QUOTE_X - DIVIDER_GAP)
+#define QUOTE_MAX_Y 210
 
 // Tracks consecutive quote-fetch failures so we can reboot after MAX_FETCH_FAILURES.
 static int consecutiveFetchFailures = 0;
@@ -163,12 +168,26 @@ bool fetchGroceries(String* items, int* count) {
     return true;
 }
 
-int16_t wrapAndDraw(const String& s, int16_t x, int16_t y, int16_t maxW) {
+String fitWidth(const String& text, int16_t maxW) {
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(text.c_str(), 0, 0, &x1, &y1, &w, &h);
+    if (w <= (uint16_t)maxW) return text;
+
+    for (int n = (int)text.length() - 1; n > 0; n--) {
+        String trial = text.substring(0, n) + "...";
+        display.getTextBounds(trial.c_str(), 0, 0, &x1, &y1, &w, &h);
+        if (w <= (uint16_t)maxW) return trial;
+    }
+    return "...";
+}
+
+int16_t wrapAndDraw(const String& s, int16_t x, int16_t y, int16_t maxW, int16_t maxY) {
     int16_t curY = y;
     const int lineHeight = 36;  // Double spacing
     int pos = 0;
 
-    while (pos < (int)s.length()) {
+    while (pos < (int)s.length() && curY <= maxY) {
         String line;
         int16_t x1, y1;
         uint16_t w, h;
@@ -186,27 +205,20 @@ int16_t wrapAndDraw(const String& s, int16_t x, int16_t y, int16_t maxW) {
             pos = spacePos + 1;
             if (spacePos >= (int)s.length()) break;
         }
-        if (line.length() > 0) {
-            display.setCursor(x, curY);
-            display.print(line);
-            curY += lineHeight;
+        if (line.length() == 0) break;
+
+        bool more = pos < (int)s.length();
+        if (more && curY + lineHeight > maxY) {
+            line = fitWidth(line + "...", maxW);
+        } else {
+            line = fitWidth(line, maxW);
         }
+        display.setCursor(x, curY);
+        display.print(line);
+        curY += lineHeight;
+        if (more && curY > maxY) break;
     }
     return curY;
-}
-
-String fitWidth(const String& text, int16_t maxW) {
-    int16_t x1, y1;
-    uint16_t w, h;
-    display.getTextBounds(text.c_str(), 0, 0, &x1, &y1, &w, &h);
-    if (w <= (uint16_t)maxW) return text;
-
-    for (int n = (int)text.length() - 1; n > 0; n--) {
-        String trial = text.substring(0, n) + "...";
-        display.getTextBounds(trial.c_str(), 0, 0, &x1, &y1, &w, &h);
-        if (w <= (uint16_t)maxW) return trial;
-    }
-    return "...";
 }
 
 void drawGroceryColumn(String* items, int count, bool ok) {
@@ -293,21 +305,24 @@ void updateDisplay() {
     display.setTextColor(GxEPD_BLACK);
     display.setFont(&FreeSansBold24pt7b);
     display.setCursor(20, 55);
-    display.print(header);
+    display.print(fitWidth(header, QUOTE_W));
 
     display.setFont(&FreeSans12pt7b);
     String quotedText = "\"" + quote + "\"";
-    int16_t quoteEndY = wrapAndDraw(quotedText, QUOTE_X, 95, QUOTE_W);
+    int16_t quoteEndY = wrapAndDraw(quotedText, QUOTE_X, 95, QUOTE_W, QUOTE_MAX_Y);
     drawGroceryColumn(groceries, groceryCount, groceryOk);
 
     if (author.length() > 0) {
-        display.setCursor(60, quoteEndY + 2);
-        display.print("- ");
-        display.print(author);
+        int16_t authorY = quoteEndY + 2;
+        if (authorY > 228) authorY = 228;
+        display.setFont(&FreeSans12pt7b);
+        display.setCursor(60, authorY);
+        display.print(fitWidth("- " + author, DIVIDER_X - 60 - DIVIDER_GAP));
     }
 
+    display.setFont(&FreeSans12pt7b);
     display.setCursor(20, 250);
-    display.print(updated);
+    display.print(fitWidth(updated, QUOTE_W));
 
     display.display(false);
     display.hibernate();

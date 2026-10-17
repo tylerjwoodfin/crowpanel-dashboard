@@ -15,7 +15,7 @@ Firmware for the **Elecrow CrowPanel 5.79" ESP32-S3 E-Paper Display**. Shows alt
 ## Features
 
 - **Trash duty:** Alternates between two names every other Thursday (epoch-week based)
-- **Random quote:** Fetched from [ZenQuotes API](https://zenquotes.io/) at each refresh, wrapped in the left 80% of the screen
+- **Random quote:** Fetched from [ZenQuotes API](https://zenquotes.io/) at each refresh, wrapped to the left of the grocery column
 - **Grocery list:** Incomplete items from the Reminders list named Grocery, drawn in the right column
 - **Last updated:** Pacific time (PST/PDT), NTP-synced
 - **Auto-refresh:** Every 15 minutes
