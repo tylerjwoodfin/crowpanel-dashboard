@@ -43,8 +43,9 @@ jobs:
       - name: Publish firmware
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.sha }}
-          name: ${{ github.sha }}
+          # A tag of 40 hex digits is rejected, so the release would stay an unpublished draft.
+          tag_name: fw-${{ github.sha }}
+          name: fw-${{ github.sha }}
           files: .pio/build/crowpanel/firmware.bin
           fail_on_unmatched_files: true
           make_latest: true

@@ -108,7 +108,7 @@ Configured for Pacific Time (PST/PDT) with automatic daylight saving. Change the
 
 ## Updates
 
-Every 15 minutes the device asks GitHub for the [latest firmware release](https://github.com/tylerjwoodfin/crowpanel-dashboard/releases/latest). The release tag is the commit SHA that built `firmware.bin`. The device installs that file only when the tag is a newer commit than the one baked into the running firmware. The same commit, or an older release, is left alone.
+Every 15 minutes the device asks GitHub for the [latest firmware release](https://github.com/tylerjwoodfin/crowpanel-dashboard/releases/latest). The release tag is `fw-` plus the commit SHA that built `firmware.bin`. GitHub rejects a tag that is only the 40-character SHA. The device installs that file only when the tag is a newer commit than the one baked into the running firmware. The same commit, or an older release, is left alone.
 
 The panel cannot compile source. [`.github/workflows/firmware.yml`](.github/workflows/firmware.yml) builds the binary on GitHub Actions when a push to `main` changes `src/`, `include/`, `platformio.ini`, `git_version.py`, or the workflow itself. The short commit on the bottom of the screen is the running build.
 

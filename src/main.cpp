@@ -349,7 +349,14 @@ bool parseGithubTime(const String& s, time_t* out) {
     return true;
 }
 
-// Latest release tag is the commit SHA that GitHub Actions built.
+// Tags are "fw-" plus the commit SHA. GitHub rejects a tag that is only 40 hex digits.
+bool shaFromReleaseTag(const String& tag, String& sha) {
+    if (!tag.startsWith("fw-")) return false;
+    sha = tag.substring(3);
+    return isGitSha(sha);
+}
+
+// Latest release tag is fw- plus the commit SHA that GitHub Actions built.
 bool fetchLatestRelease(String& sha, time_t* published) {
     HTTPClient http;
     if (!http.begin(GITHUB_LATEST_RELEASE)) return false;
@@ -378,11 +385,11 @@ bool fetchLatestRelease(String& sha, time_t* published) {
         return false;
     }
 
-    sha = doc["tag_name"].as<String>();
-    sha.trim();
-    sha.toLowerCase();
-    if (!isGitSha(sha)) {
-        Serial.printf("Latest release tag is not a commit: %s\n", sha.c_str());
+    String tag = doc["tag_name"].as<String>();
+    tag.trim();
+    tag.toLowerCase();
+    if (!shaFromReleaseTag(tag, sha)) {
+        Serial.printf("Latest release tag is not a firmware commit: %s\n", tag.c_str());
         return false;
     }
     String publishedAt = doc["published_at"].as<String>();
@@ -405,7 +412,7 @@ void showStatus(const char* line) {
 }
 
 void installFirmware(const String& sha) {
-    String url = "https://github.com/tylerjwoodfin/crowpanel-dashboard/releases/download/";
+    String url = "https://github.com/tylerjwoodfin/crowpanel-dashboard/releases/download/fw-";
     url += sha;
     url += "/firmware.bin";
     Serial.printf("Installing %s\n", url.c_str());
